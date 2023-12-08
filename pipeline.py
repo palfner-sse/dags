@@ -1,6 +1,6 @@
 from airflow.decorators import dag, task
 from pendulum import datetime
-from astro.dataframes.pandas import DataFrame
+import astro.dataframes.pandas
 from mlflow_provider.hooks.client import MLflowClientHook
 from mlflow_provider.operators.registry import CreateRegisteredModelOperator
 from airflow.providers.amazon.aws.operators.s3 import S3CreateBucketOperator
@@ -42,7 +42,7 @@ def pipeline():
         return new_experiment_information["experiment_id"]
 
     @task
-    def scale_features(experiment_id: str) -> DataFrame:
+    def scale_features(experiment_id: str) -> astro.dataframes.pandas.DataFrame:
         """Track feature scaling by sklearn in Mlflow."""
         from sklearn.datasets import fetch_california_housing
         from sklearn.preprocessing import StandardScaler
