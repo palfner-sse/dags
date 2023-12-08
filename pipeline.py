@@ -1,4 +1,7 @@
 from airflow.decorators import dag, task
+from airflow.providers.amazon.aws.operators.s3 import S3CreateBucketOperator
+from mlflow_provider.hooks.client import MLflowClientHook
+from mlflow_provider.operators.registry import CreateRegisteredModelOperator
 from pendulum import datetime
 
 ## MLFlow parameters
@@ -16,6 +19,30 @@ ARTIFACT_BUCKET = "mlflowdataenergy"
     catchup=False
 )
 def pipeline():
+    create_buckets_if_not_exists = S3CreateBucketOperator(
+        task_id="create_buckets_if_not_exists",
+        aws_conn_id=MINIO_CONN_ID,
+        bucket_name=ARTIFACT_BUCKET,
+    )
+
+    @task
+    def create_experiment(experiment_name, artifact_bucket, **context):
+        """Create a new MLFlow experiment with a specified name.
+        Save artifacts to the specified S3 bucket."""
+
+        ts = context["ts"]
+
+        mlflow_hook = MLflowClientHook(mlflow_conn_id=MLFLOW_CONN_ID)
+        new_experiment_information = mlflow_hook.run(
+            endpoint="api/2.0/mlflow/experiments/create",
+            request_params={
+                "name": ts + "_" + experiment_name,
+                "artifact_location": f"s3://{artifact_bucket}/",
+            },
+        ).json()
+
+        return new_experiment_information["experiment_id"]
+
     @task
     def trainModel(experiment_name, artifact_bucket):
         import mlflow
@@ -51,6 +78,24 @@ def pipeline():
             # Log model metrics
             mlflow.log_metric("accuracy", accuracy)
 
+    create_registered_model = CreateRegisteredModelOperator(
+        task_id="create_registered_model",
+        name="{{ ts }}" + "_" + REGISTERED_MODEL_NAME,
+        tags=[
+            {"key": "model_type", "value": "regression"},
+            {"key": "data", "value": "housing"},
+        ],
+    )
+
+    experiment_created = create_experiment(
+        experiment_name=EXPERIMENT_NAME, artifact_bucket=ARTIFACT_BUCKET
+    )
+
+    (
+        create_buckets_if_not_exists
+        >> experiment_created
+        >> create_registered_model,
+    )
 
 
 pipeline()
