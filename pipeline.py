@@ -1,10 +1,5 @@
-import astro
 from airflow.decorators import dag, task
 from pendulum import datetime
-from astro.dataframes.pandas import DataFrame
-from mlflow_provider.hooks.client import MLflowClientHook
-from mlflow_provider.operators.registry import CreateRegisteredModelOperator
-from airflow.providers.amazon.aws.operators.s3 import S3CreateBucketOperator
 
 ## MLFlow parameters
 MLFLOW_CONN_ID = "mlflow_default"
