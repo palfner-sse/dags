@@ -14,79 +14,48 @@ EXPERIMENT_NAME = "energy"
 REGISTERED_MODEL_NAME = "energy_model"
 ARTIFACT_BUCKET = "mlflowdataenergy"
 
+
 @dag(
     schedule=None,
     start_date=datetime(2023, 12, 8),
     catchup=False
 )
-
 def pipeline():
-    create_buckets_if_not_exists = S3CreateBucketOperator(
-        task_id="create_buckets_if_not_exists",
-        aws_conn_id=MLFLOW_CONN_ID,
-        bucket_name=ARTIFACT_BUCKET,
-    )
-
     @task
-    def create_experiment(experiment_name, artifact_bucket, **context):
-        ts = context["ts"]
-
-        mlflow_hook = MLflowClientHook(mlflow_conn_id=MLFLOW_CONN_ID)
-        new_experiment_information = mlflow_hook.run(
-            endpoint="api/2.0/mlflow/experiments/create",
-            request_params={
-                "name": ts + experiment_name,
-                "artifact_location": f"s3://{artifact_bucket}/"
-            }
-        ).json()
-
-        return new_experiment_information["experiment_id"]
-
-    @task
-    def scale_features(experiment_id: str) -> astro.dataframes.pandas.DataFrame:
-        """Track feature scaling by sklearn in Mlflow."""
-        from sklearn.datasets import fetch_california_housing
-        from sklearn.preprocessing import StandardScaler
+    def trainModel(experiment_name, artifact_bucket):
         import mlflow
-        import pandas as pd
+        import mlflow.sklearn
+        from sklearn.datasets import load_iris
+        from sklearn.model_selection import train_test_split
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.metrics import accuracy_score
 
-        df = fetch_california_housing(download_if_missing=True, as_frame=True).frame
+        # Load the Iris dataset
+        iris = load_iris()
+        X_train, X_test, y_train, y_test = train_test_split(iris.data, iris.target, test_size=0.2, random_state=42)
 
-        mlflow.sklearn.autolog()
+        # Train a RandomForestClassifier model
+        model = RandomForestClassifier(n_estimators=10)
+        model.fit(X_train, y_train)
 
-        target = "MedHouseVal"
-        X = df.drop(target, axis=1)
-        y = df[target]
+        # Make predictions on the test set
+        y_pred = model.predict(X_test)
 
-        scaler = StandardScaler()
+        # Calculate accuracy
+        accuracy = accuracy_score(y_test, y_pred)
+        print(f"Model Accuracy: {accuracy}")
 
-        with mlflow.start_run(experiment_id=experiment_id, run_name="Scaler") as run:
-            X = pd.DataFrame(scaler.fit_transform(X), columns=X.columns)
-            mlflow.sklearn.log_model(scaler, artifact_path="scaler")
-            mlflow.log_metrics(pd.DataFrame(scaler.mean_, index=X.columns)[0].to_dict())
+        # Log the model with MLflow
+        with mlflow.start_run():
+            # Log model parameters
+            mlflow.log_param("n_estimators", 10)
 
-        X[target] = y
+            # Log the sklearn model
+            mlflow.sklearn.log_model(model, "model")
 
-    create_registered_model = CreateRegisteredModelOperator(
-        task_id="create_registered_model",
-        name="{{ ts }}" + "_" + REGISTERED_MODEL_NAME,
-        tags=[
-            {"key": "model_type", "value": "regression"},
-            {"key": "data", "value": "housing"},
-        ],
-    )
+            # Log model metrics
+            mlflow.log_metric("accuracy", accuracy)
 
-    experiment_created = create_experiment(
-        experiment_name=EXPERIMENT_NAME, artifact_bucket=ARTIFACT_BUCKET
-    )
-
-    (
-        create_buckets_if_not_exists
-        >> experiment_created
-        >> scale_features(experiment_id=experiment_created)
-        >> create_registered_model,
-    )
 
 
 pipeline()
-
