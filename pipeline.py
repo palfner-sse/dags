@@ -1,101 +1,67 @@
-from airflow.decorators import dag, task
-from airflow.providers.amazon.aws.operators.s3 import S3CreateBucketOperator
-from mlflow_provider.hooks.client import MLflowClientHook
-from mlflow_provider.operators.registry import CreateRegisteredModelOperator
-from pendulum import datetime
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime, timedelta
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+import mlflow
+import mlflow.sklearn
 
-## MLFlow parameters
-MLFLOW_CONN_ID = "mlflow_default"
-MINIO_CONN_ID = "minio_local"
-MAX_RESULTS_MLFLOW_LIST_EXPERIMENTS = 100
-EXPERIMENT_NAME = "energy"
-REGISTERED_MODEL_NAME = "energy_model"
-ARTIFACT_BUCKET = "mlflowdataenergy"
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'start_date': datetime(2023, 1, 1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
 
-
-@dag(
-    schedule=None,
-    start_date=datetime(2023, 12, 8),
-    catchup=False
+dag = DAG(
+    'model_training_dag',
+    default_args=default_args,
+    description='A simple DAG for model training',
+    schedule_interval=timedelta(days=1),
 )
-def pipeline():
-    create_buckets_if_not_exists = S3CreateBucketOperator(
-        task_id="create_buckets_if_not_exists",
-        aws_conn_id=MINIO_CONN_ID,
-        bucket_name=ARTIFACT_BUCKET,
-    )
 
-    @task
-    def create_experiment(experiment_name, artifact_bucket, **context):
-        """Create a new MLFlow experiment with a specified name.
-        Save artifacts to the specified S3 bucket."""
+def download_dataset():
+    url = "https://www.entsoe.eu/publications/data/power-stats/2022/monthly_hourly_load_values_2022.csv"
+    df = pd.read_csv(url)
+    df.to_csv('/path/to/save/dataset.csv', index=False)
 
-        ts = context["ts"]
+def preprocess_data():
+    # Add data preprocessing steps here
+    pass
 
-        mlflow_hook = MLflowClientHook(mlflow_conn_id=MLFLOW_CONN_ID)
-        new_experiment_information = mlflow_hook.run(
-            endpoint="api/2.0/mlflow/experiments/create",
-            request_params={
-                "name": ts + "_" + experiment_name,
-                "artifact_location": f"s3://{artifact_bucket}/",
-            },
-        ).json()
+def train_model():
+    # Load dataset
+    df = pd.read_csv('/path/to/save/dataset.csv')
 
-        return new_experiment_information["experiment_id"]
+    # Example: Predicting some target based on features
+    X = df[['feature1', 'feature2']]  # Replace with actual features
+    y = df['target']  # Replace with actual target
 
-    @task
-    def trainModel(experiment_name, artifact_bucket):
-        import mlflow
-        import mlflow.sklearn
-        from sklearn.datasets import load_iris
-        from sklearn.model_selection import train_test_split
-        from sklearn.ensemble import RandomForestClassifier
-        from sklearn.metrics import accuracy_score
+    model = RandomForestRegressor()
+    model.fit(X, y)
 
-        # Load the Iris dataset
-        iris = load_iris()
-        X_train, X_test, y_train, y_test = train_test_split(iris.data, iris.target, test_size=0.2, random_state=42)
+    # Log model in MLflow
+    mlflow.sklearn.log_model(model, "random_forest_model")
 
-        # Train a RandomForestClassifier model
-        model = RandomForestClassifier(n_estimators=10)
-        model.fit(X_train, y_train)
+download_task = PythonOperator(
+    task_id='download_dataset',
+    python_callable=download_dataset,
+    dag=dag,
+)
 
-        # Make predictions on the test set
-        y_pred = model.predict(X_test)
+preprocess_task = PythonOperator(
+    task_id='preprocess_data',
+    python_callable=preprocess_data,
+    dag=dag,
+)
 
-        # Calculate accuracy
-        accuracy = accuracy_score(y_test, y_pred)
-        print(f"Model Accuracy: {accuracy}")
+train_model_task = PythonOperator(
+    task_id='train_model',
+    python_callable=train_model,
+    dag=dag,
+)
 
-        # Log the model with MLflow
-        with mlflow.start_run():
-            # Log model parameters
-            mlflow.log_param("n_estimators", 10)
-
-            # Log the sklearn model
-            mlflow.sklearn.log_model(model, "model")
-
-            # Log model metrics
-            mlflow.log_metric("accuracy", accuracy)
-
-    create_registered_model = CreateRegisteredModelOperator(
-        task_id="create_registered_model",
-        name="{{ ts }}" + "_" + REGISTERED_MODEL_NAME,
-        tags=[
-            {"key": "model_type", "value": "regression"},
-            {"key": "data", "value": "housing"},
-        ],
-    )
-
-    experiment_created = create_experiment(
-        experiment_name=EXPERIMENT_NAME, artifact_bucket=ARTIFACT_BUCKET
-    )
-
-    (
-        create_buckets_if_not_exists
-        >> experiment_created
-        >> create_registered_model,
-    )
-
-
-pipeline()
+download_task >> preprocess_task >> train_model_task
